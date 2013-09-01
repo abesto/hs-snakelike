@@ -1,11 +1,14 @@
-module Display where
+module UI.Game where
 
+import qualified Data.Char as DC
 import qualified Data.Int as DI
 import qualified Data.IORef as DIORef
 import qualified Graphics.UI.SDL as SDL
 import qualified Graphics.UI.SDL.Primitives as SDLp
 import qualified Graphics.UI.SDL.TTF as TTF
-import qualified Graphics.UI.SDL.TTF.General as TTFG
+import qualified Control.Concurrent as CC
+import qualified Control.Concurrent.Timer as CCT
+import qualified Control.Concurrent.Suspend.Lifted as CCSL
 
 import qualified Model as M
 
@@ -141,20 +144,86 @@ gameOver ui@UI{uiSurface=surface} = do
   SDL.flip surface
   return ()
 
-initUI :: M.Game -> Int -> IO (DIORef.IORef UI)
-initUI game cellSize = do
-  screen <- SDL.setVideoMode (fromIntegral $ windowWidth' (M.gameColumns game) 16) 
-                             (fromIntegral $ windowHeight' (M.gameRows game) 16) 
-                             32 [SDL.DoubleBuf]
-  surface <- SDL.getVideoSurface
-  TTFG.init
-  font <- TTF.openFont "art/DejaVuSansMono.ttf" 13
-  SDL.setCaption "Snake!" "snake"
-  DIORef.newIORef UI {
+---- Handle user input ----
+handleInput :: DIORef.IORef UI -> IO ()
+handleInput uiRef = do
+  event <- SDL.waitEvent
+  ui <- DIORef.readIORef uiRef
+  case event of
+    SDL.KeyDown k -> if SDL.symKey k `elem` [SDL.SDLK_UP, SDL.SDLK_RIGHT, SDL.SDLK_DOWN, SDL.SDLK_LEFT] 
+      then do
+        let ui' = ui{uiGame = transform (uiGame ui) (SDL.symKey k)}
+        DIORef.writeIORef uiRef ui'
+        handleInput uiRef
+      else case SDL.symKey k of
+        SDL.SDLK_q -> DIORef.writeIORef uiRef ui{uiGame = (uiGame ui){M.gameStatus=M.Quit}}
+        SDL.SDLK_k -> modifySpeed ui 1
+        SDL.SDLK_j -> modifySpeed ui (-1)
+        _ -> handleInput uiRef
+    _ -> handleInput uiRef  
+  where toHeading SDL.SDLK_UP = M.North
+        toHeading SDL.SDLK_RIGHT = M.East
+        toHeading SDL.SDLK_DOWN = M.South
+        toHeading SDL.SDLK_LEFT = M.West
+        transform game@M.Game{M.gameInputQueue=q} key = game{M.gameInputQueue=q ++ [toHeading key]}
+        modifySpeed ui delta = do
+          let ui' = ui{uiSpeed = max 1 (min 10 $ uiSpeed ui + delta)}
+          DIORef.writeIORef uiRef ui'
+          writeStatus ui'
+          handleInput uiRef
+
+tick :: DIORef.IORef UI -> IO Bool
+tick uiRef = do
+  ui <- DIORef.readIORef uiRef
+  game' <- M.stretchIfStarHit 1 $ M.wrapAround $ M.detectCrash $ M.moveSnake $ M.turnSnake $ uiGame ui
+  let ui' = ui{uiGame = game'}
+  draw ui'
+  DIORef.writeIORef uiRef ui'
+  return True
+
+timedStarTick :: DIORef.IORef UI -> IO ()
+timedStarTick uiRef = do
+  ui <- DIORef.readIORef uiRef
+  let game = uiGame ui
+  let ui' = ui{uiGame = M.tickTimedStars game}
+  DIORef.writeIORef uiRef ui'
+  drawStars ui'
+  return ()
+
+gameLoop :: DIORef.IORef UI -> CC.ThreadId -> IO ()
+gameLoop uiRef handlerThread = do
+  ui <- DIORef.readIORef uiRef
+  if (M.gameStatus $ uiGame ui) == M.Playing 
+    then do
+      CC.threadDelay $ 1200000 `div` uiSpeed ui
+      tick uiRef
+      gameLoop uiRef handlerThread
+    else do
+      CC.killThread handlerThread
+
+waitForQ = do
+  event <- SDL.waitEvent
+  case event of
+    SDL.KeyDown k -> if SDL.symKey k == SDL.SDLK_q
+                       then return ()
+                       else waitForQ
+    _ -> waitForQ  
+
+-- I want to play a game.    
+init game surface font cellSize = do
+  uiRef <- DIORef.newIORef UI {
     uiGame = game
   , uiSurface = surface
   , uiCellSize = 16
   , uiFont = font
   , uiSpeed = 5
   }
+  handlerThread <- CC.forkIO (handleInput uiRef)
+  timedStarTimer <- CCT.repeatedTimer (timedStarTick uiRef) (CCSL.msDelay 1000)
+  gameLoop uiRef handlerThread
+  CCT.stopTimer timedStarTimer
+  ui <- DIORef.readIORef uiRef
+  gameOver ui
+  waitForQ
+  SDLp.box surface (SDL.Rect 0 0 (fromIntegral $ windowWidth ui) (fromIntegral $ windowHeight ui)) $ SDL.Pixel 0x000000FF
 
