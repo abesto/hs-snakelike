@@ -1,0 +1,36 @@
+Name:                snake
+Version:             0.1
+Synopsis:            We'll see
+Homepage:            https://github.com/abesto/snake
+
+--TODO
+--License:             BSD3
+--License-file:        LICENSE
+
+-- The package author(s).
+Author:              Zoltan Nagy
+Maintainer:          abesto@abesto.net
+
+Stability: alpha
+
+Bug-reports: https://github.com/abesto/snake/issues/new
+
+-- Data-dir: examples
+
+Build-type:          Simple
+
+-- Extra files to be distributed with the package, such as examples or
+-- a README.
+-- Extra-source-files:
+
+-- Constraint on the version of Cabal needed to build this package.
+Cabal-version:       >=1.2
+
+Executable main
+    Main-is: Main.hs
+    Build-depends: base, hscurses, timers, suspend, random, SDL, SDL-gfx, SDL-ttf
+--  Hs-Source-Dirs: lib, .
+
+--Executable server
+--    Main-is: Main.hs
+--    Hs-Source-Dirs: server, .
