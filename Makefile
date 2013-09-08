@@ -1,4 +1,3 @@
-
 HC = ghc
 SDL_OPTIONS = `sdl-config --cflags --libs | sed -e 's/-Wl,\(\w*\)/-optl\1/' | tr ',' '-'`
 

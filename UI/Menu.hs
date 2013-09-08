@@ -70,7 +70,7 @@ clearCursor = drawCursorWithPixel backgroundPixel
 
 handleMenu :: Menu -> ErrorT String IO ()
 handleMenu menu@Menu{menuKeys, menuSurface, menuCurrentItem, menuItems} = do
-  lift $ drawMenu menu
+  lift $ drawCursor menu
   lift $ SDL.flip menuSurface
   event <- lift $ SDL.waitEventBlocking 
   menu' <- UIK.handleEvent event $ Map.fromList 
@@ -91,13 +91,8 @@ newGame :: MenuAction
 newGame menu = lift $ do
   game <- M.newGame 15 15
   UIG.init game (menuSurface menu) (menuFont menu) 15
-  drawMenu menu
-  return menu
-
-drawMenu :: Menu -> IO ()
-drawMenu menu = do
   drawMenuItems menu
-  drawCursor menu
+  return menu
 
 init :: SDL.Surface -> TTF.Font -> IO ()
 init surface font = do
@@ -108,7 +103,9 @@ init surface font = do
                    , menuKeyDown = DM.fromJust $ UIK.readKeyConf "DOWN"
                    , menuKeyAccept = DM.fromJust $ UIK.readKeyConf "RETURN"
                    }
-  runErrorT $ handleMenu $ Menu surface font 0 i k
+  let menu = Menu surface font 0 i k
+  drawMenuItems menu
+  runErrorT $ handleMenu menu
   return ()
   where buildMenuItems = zipWith buildItem [0..]
                  where buildItem index (label, action) = MenuItem index label action
