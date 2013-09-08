@@ -2,16 +2,22 @@
 
 module UI.Menu where
 
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Error
+
 import qualified Control.Monad.State as CMS
 import qualified Data.Int as DI
+import qualified Data.Map as Map
+import qualified Data.Maybe as DM
 import qualified Graphics.UI.SDL as SDL
 import qualified Graphics.UI.SDL.Primitives as SDLp
 import qualified Graphics.UI.SDL.TTF as TTF
 
 import qualified Model as M
 import qualified UI.Game as UIG
+import qualified UI.Keys as UIK
 
-type MenuAction = Menu -> IO ()
+type MenuAction = Menu -> ErrorT String IO Menu
 
 data MenuItem = MenuItem { menuItemIndex  :: Int
                          , menuItemLabel  :: String
@@ -22,7 +28,14 @@ data Menu = Menu { menuSurface      :: SDL.Surface
                  , menuFont         :: TTF.Font
                  , menuCurrentItem  :: Int
                  , menuItems        :: [MenuItem]
+                 , menuKeys         :: MenuKeys
                  }
+
+data MenuKeys = MenuKeys { menuKeyUp     :: UIK.KeyConf
+                         , menuKeyDown   :: UIK.KeyConf
+                         , menuKeyAccept :: UIK.KeyConf }
+
+errQuit = "QUIT"
 
 textColor = SDL.Color 0 255 0
 cursorPixel = SDL.Pixel 0x00FF00FF
@@ -55,44 +68,48 @@ drawCursorWithPixel pixel Menu{menuSurface, menuCurrentItem} = do
 drawCursor = drawCursorWithPixel cursorPixel
 clearCursor = drawCursorWithPixel backgroundPixel
 
-handleMenu :: Menu -> IO ()
-handleMenu menu@Menu{menuSurface, menuCurrentItem, menuItems} = do
-  SDL.flip menuSurface
-  event <- SDL.waitEventBlocking
-  case event of
-    SDL.KeyDown k -> case SDL.symKey k of
-      SDL.SDLK_DOWN   -> moveCursor 1
-      SDL.SDLK_UP     -> moveCursor (-1)
-      SDL.SDLK_RETURN -> (menuItemAction $ menuItems !! menuCurrentItem) menu
-      _  -> handleMenu menu
-    _ -> handleMenu menu
-    where moveCursor delta = if (menuCurrentItem + delta >= length menuItems) || (menuCurrentItem + delta < 0)
-                                then handleMenu menu
-                                else do
-                                  clearCursor menu
-                                  let menu' = menu{menuCurrentItem = menuCurrentItem + delta}
-                                  drawCursor menu'
-                                  handleMenu menu'
+handleMenu :: Menu -> ErrorT String IO ()
+handleMenu menu@Menu{menuKeys, menuSurface, menuCurrentItem, menuItems} = do
+  lift $ drawMenu menu
+  lift $ SDL.flip menuSurface
+  event <- lift $ SDL.waitEventBlocking 
+  menu' <- UIK.handleEvent event $ Map.fromList 
+                [ (menuKeyDown menuKeys,   moveCursor 1)
+                , (menuKeyUp menuKeys,     moveCursor (-1))
+                , (menuKeyAccept menuKeys, (menuItemAction $ menuItems !! menuCurrentItem) menu)
+                , (UIK.Otherwise,          return menu)
+                ]
+  handleMenu menu'
+  where moveCursor delta = lift $ if (menuCurrentItem + delta >= length menuItems) || (menuCurrentItem + delta < 0)
+                                  then return menu
+                                  else clearCursor menu >> return menu{menuCurrentItem = menuCurrentItem + delta}
 
 quit :: MenuAction
-quit _ = return ()
+quit _ = throwError errQuit
 
 newGame :: MenuAction
-newGame menu = do
+newGame menu = lift $ do
   game <- M.newGame 15 15
   UIG.init game (menuSurface menu) (menuFont menu) 15
-  initMenu menu
+  drawMenu menu
+  return menu
 
-initMenu :: Menu -> IO ()
-initMenu menu = do
+drawMenu :: Menu -> IO ()
+drawMenu menu = do
   drawMenuItems menu
   drawCursor menu
-  handleMenu menu
 
 init :: SDL.Surface -> TTF.Font -> IO ()
-init surface font = initMenu $  Menu surface font 0 $ buildMenuItems [ ("New game", newGame)
-                                                                     , ("Quit", quit)
-                                                                     ]
+init surface font = do
+  let i = buildMenuItems [ ("New game", newGame)
+                         , ("Quit", quit)
+                         ]
+  let k = MenuKeys { menuKeyUp = DM.fromJust $ UIK.readKeyConf "UP"
+                   , menuKeyDown = DM.fromJust $ UIK.readKeyConf "DOWN"
+                   , menuKeyAccept = DM.fromJust $ UIK.readKeyConf "RETURN"
+                   }
+  runErrorT $ handleMenu $ Menu surface font 0 i k
+  return ()
   where buildMenuItems = zipWith buildItem [0..]
                  where buildItem index (label, action) = MenuItem index label action
 
