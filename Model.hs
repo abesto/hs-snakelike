@@ -1,30 +1,40 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Model where
 
 import qualified Data.List as DL
 import qualified System.Random as R
+import Control.Lens
 
-data Position = Position { x :: Int, y :: Int } deriving (Show, Eq, Ord)
-data Heading = North | East | South | West deriving (Show, Eq)
-data Status = Playing | Quit | Lost deriving Eq
-data Star = SimpleStar Position | TimedStar Position Int deriving Eq
-data Game = Game { gameHeading :: Heading
-                 , gameLastTickHeading :: Heading
-                 , gameSnake :: [Position]
-                 , gameStars :: [Star]
-                 , gameStretching :: Int
-                 , gameStatus :: Status
-                 , gameRows :: Int
-                 , gameColumns :: Int
-                 , gameInputQueue :: [Heading]
-                 , gameScore :: Int
-                 }
+data Position = Position { _x :: Int, _y :: Int } deriving (Show, Eq, Ord)
+data Heading = North | East | South | West deriving (Show, Eq, Enum)
+succHeading West = North
+succHeading h = succ h
+predHeading North = West
+predHeading h = pred h
 
-offset :: Position -> Heading -> Position
-p@(Position x y) `offset` h 
-  | h == North = p{y = y - 1}
-  | h == East  = p{x = x + 1}
-  | h == South = p{y = y + 1}
-  | h == West  = p{x = x - 1}
+data Status = Playing | Quit | Lost deriving (Eq, Show)
+data Star = SimpleStar Position | TimedStar Position Int deriving (Eq, Show)
+data Game = Game { _heading :: Heading
+                 , _lastTickHeading :: Heading
+                 , _snake :: [Position]
+                 , _stars :: [Star]
+                 , _stretching :: Int
+                 , _status :: Status
+                 , _rows :: Int
+                 , _columns :: Int
+                 , _inputQueue :: [Heading]
+                 , _score :: Int
+                 } deriving Show
+
+makeLenses ''Position
+makeLenses ''Game
+
+offset :: Heading -> Position -> Position
+offset North = y `over` pred
+offset South = y `over` succ
+offset East = x `over` succ
+offset West = x `over` pred
 
 headingBetween :: Position -> Position -> Heading
 headingBetween (Position x0 y0) (Position x1 y1)
@@ -39,56 +49,48 @@ headingBetween (Position x0 y0) (Position x1 y1)
   | x0 == x1 && y0 > y1 = South
 
 wrapAround :: Game -> Game
-wrapAround game@Game{gameSnake=snake, gameRows=rows, gameColumns=columns} = 
-  game{gameSnake = map wrapAroundOne snake}
-  where wrapAroundOne (Position x y) = Position (wrapX x) (wrapY y)
-        wrapX x
-          | x == -1 = columns - 1
-          | x == columns = 0
-          | otherwise = x
-        wrapY y
-          | y == -1 = rows - 1
-          | y == rows = 0
-          | otherwise = y
+wrapAround game = game&snake.mapped %~ wrapXY
+  where wrapXY = (over x $ wrapOne $ game^.columns) . (over y $ wrapOne $ game^.rows)
+        wrapOne limit n
+          | n == -1 = limit -1
+          | n == limit = 0
+          | otherwise = n
 
 moveSnake :: Game -> Game
-moveSnake game@Game{gameSnake=snake, gameHeading=heading, gameStretching=stretching} =
-  let newHead = (head snake) `offset` heading
-      newTail = if stretching > 0 then snake else init snake
-  in game{ gameSnake = newHead : newTail
-                    , gameStretching = max 0 (stretching - 1)
-                    , gameLastTickHeading = heading
-                    }
+moveSnake = updateHead . addNeck . decStretching . updateTail . updateLastTickHeading where
+      updateHead g = g&snake._head %~ (offset $ g^.heading)
+      addNeck g = g&snake._tail %~ (g^.snake.to head :)
+      updateTail g = g&snake._tail %~ if g^.stretching > 0 then id else init
+      decStretching = stretching %~ (\n -> max 0 (n - 1))
+      updateLastTickHeading g = g&lastTickHeading .~ g^.heading
 
 turnSnake :: Game -> Game
-turnSnake game@Game{gameLastTickHeading=old, gameInputQueue=q}
-  | null q = game
-  | otherwise = let new = head q
-                    game' = game { gameInputQueue = tail q }
-                    withPoppedFromQueue
-                      | new == North && old == South = game'
-                      | new == East && old == West = game'
-                      | new == South && old == North = game'
-                      | new == West && old == East = game'
-                      | otherwise = game'{gameHeading=new}
-                in withPoppedFromQueue
+turnSnake g
+  | null $ g^.inputQueue = g
+  | otherwise = g & shiftInputQueue . turnUnlessReverse where
+      shiftInputQueue = inputQueue %~ tail
+      turnUnlessReverse =
+        if new `elem` [succHeading old, predHeading old]
+          then heading.~new
+          else id
+        where old = g^.heading
+              new = g^.inputQueue.to head
 
 detectCrash :: Game -> Game
-detectCrash game = 
-  let snake = gameSnake game 
-      crashed = any ((>1) . length) $ DL.group $ DL.sort snake
-  in if crashed then game{gameStatus = Lost} else game
+detectCrash game =
+  if crashed then game&status.~Lost else game
+  where crashed = any ((>1) . length) $ DL.group $ DL.sort $ game^.snake
 
 stretch :: Int -> Game -> Game
-stretch new game@Game{gameStretching=old} = game{gameStretching = old + new}
+stretch = set stretching
 
 generateStarPosition :: Game -> IO Position
-generateStarPosition game@Game{gameRows=rows, gameColumns=columns, gameSnake=snake, gameStars=stars} = do
-  gen <- R.getStdGen 
-  x <- R.getStdRandom $ R.randomR (0, columns-1)
-  y <- R.getStdRandom $ R.randomR (0, rows-1)
+generateStarPosition g = do
+  gen <- R.getStdGen
+  x <- R.getStdRandom $ R.randomR (0, g^.columns-1)
+  y <- R.getStdRandom $ R.randomR (0, g^.rows-1)
   let p = Position x y
-  if p `elem` snake || any (starAt p) stars then generateStarPosition game else return p
+  if p `elem` (g^.snake) || any (starAt p) (g^.stars) then generateStarPosition g else return p
   where starAt p (SimpleStar p') = p == p'
         starAt p (TimedStar p' _) = p == p'
 
@@ -100,22 +102,21 @@ placeStars game = do
   where generateWantTimedStar = do
           rand <- R.getStdRandom $ R.randomR (0, 10)
           return $ (rand::Int) == 0
-        haveTimedStar = any isTimedStar (gameStars game)
-        haveSimpleStar = any isSimpleStar (gameStars game)
+        haveTimedStar = any isTimedStar (_stars game)
+        haveSimpleStar = any isSimpleStar (_stars game)
 
 placeSimpleStar :: Game -> IO Game
-placeSimpleStar game = do
-  pos <- generateStarPosition game
-  return game{gameStars = (gameStars game) ++ [SimpleStar pos]}
+placeSimpleStar g = do
+  pos <- generateStarPosition g
+  return $ g&stars %~ (++[SimpleStar pos])
 
 placeTimedStar :: Game -> IO Game
-placeTimedStar game@Game{gameStars=stars} = do
-  pos <- generateStarPosition game
-  return game{gameStars = stars ++ [TimedStar pos 7]}
+placeTimedStar g = do
+  pos <- generateStarPosition g
+  return $ g&stars %~ (++[TimedStar pos 7])
 
 tickTimedStars :: Game -> Game
-tickTimedStars game@Game{gameStars=stars} = 
-    game{gameStars = filter notExpiredStar $ map transform stars}
+tickTimedStars = (stars.mapped %~ transform) . (stars %~ filter notExpiredStar)
     where transform s@(SimpleStar pos) = s
           transform s@(TimedStar pos i) = TimedStar pos (i-1)
           notExpiredStar s@(SimpleStar pos) = True
@@ -126,30 +127,30 @@ isSimpleStar (TimedStar _ _) = False
 isTimedStar = not . isSimpleStar
 
 stretchIfStarHit :: Int -> Game -> IO Game
-stretchIfStarHit stretchLength game@Game{gameSnake=(snakeHead:_), gameStars=stars} = do
-  let hitStars = filter starHit stars
-  placeStars $ stretch (length hitStars) $ foldr handleStarHit game $ filter starHit stars
-  where starHit (SimpleStar pos) = snakeHead == pos
-        starHit (TimedStar pos _) = snakeHead == pos
-        handleStarHit hit@(SimpleStar pos) game = handleStarHit' hit 1 game
-        handleStarHit hit@(TimedStar pos score) game = handleStarHit' hit score game
-        handleStarHit' star score game = game { gameScore = score + gameScore game
-                                              , gameStars = [s | s <- gameStars game, s /= star] }
-        stretch n game = game { gameStretching = n + gameStretching game}
+stretchIfStarHit stretchLength g = placeStars $ foldr handleStarHit g hitStars where
+  hitStars = filter starHit $ g^.stars
+  snakeHead = g^.snake.to head
+  starHit (SimpleStar pos) = snakeHead == pos
+  starHit (TimedStar pos _) = snakeHead == pos
+  handleStarHit hit@(SimpleStar pos) game = handleStarHit' hit 1 game
+  handleStarHit hit@(TimedStar pos score) game = handleStarHit' hit score game
+  handleStarHit' star hitScore = (score +~ hitScore)
+                               . (stars %~ filter (/= star))
+                               . (stretching +~ stretchLength * (length hitStars))
 
 newGame :: Int -> Int -> IO Game
 newGame rows columns = do
   let snake = [Position x 10 | x <- [5..10]]
   let heading = West
   placeStars Game {
-    gameHeading = heading
-  , gameLastTickHeading = heading
-  , gameSnake = snake
-  , gameStars = []
-  , gameStretching = 0
-  , gameStatus = Playing
-  , gameRows = rows
-  , gameColumns = columns
-  , gameInputQueue = []
-  , gameScore = 0
+    _heading = heading
+  , _lastTickHeading = heading
+  , _snake = snake
+  , _stars = []
+  , _stretching = 0
+  , _status = Playing
+  , _rows = rows
+  , _columns = columns
+  , _inputQueue = []
+  , _score = 0
   }

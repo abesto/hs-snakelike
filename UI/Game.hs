@@ -1,6 +1,5 @@
 module UI.Game where
 
-import qualified Data.Char as DC
 import qualified Data.Int as DI
 import qualified Data.IORef as DIORef
 import qualified Graphics.UI.SDL as SDL
@@ -9,6 +8,7 @@ import qualified Graphics.UI.SDL.TTF as TTF
 import qualified Control.Concurrent as CC
 import qualified Control.Concurrent.Timer as CCT
 import qualified Control.Concurrent.Suspend.Lifted as CCSL
+import Control.Lens
 
 import qualified Model as M
 
@@ -26,37 +26,41 @@ statusBarHeight :: Int
 statusBarHeight = 20
 
 windowWidth :: UI -> DI.Int16
-windowWidth ui@UI{uiGame=g} = windowWidth' (fromIntegral $ M.gameColumns g) 
-                                           (fromIntegral $ uiCellSize ui) 
+windowWidth ui@UI{uiGame=g} = windowWidth' (fromIntegral $ g^.M.columns)
+                                           (fromIntegral $ uiCellSize ui)
+
 windowWidth' :: Int -> Int -> DI.Int16
 windowWidth' columns cellSize = fromIntegral $ columns * cellSize
 
 windowHeight :: UI -> DI.Int16
-windowHeight ui@UI{uiGame=g} = windowHeight' (fromIntegral $ M.gameRows g)
+windowHeight ui@UI{uiGame=g} = windowHeight' (fromIntegral $ g^.M.rows)
                                              (fromIntegral $ uiCellSize ui)
-windowHeight' :: Int -> Int -> DI.Int16                                             
+windowHeight' :: Int -> Int -> DI.Int16
 windowHeight' rows cellSize = fromIntegral $ statusBarHeight + rows * cellSize
 
 newCPosition :: Int -> Int -> CPosition
 newCPosition x y = CPosition (fromIntegral x) (fromIntegral y)
 
 fromPosition :: UI -> M.Position -> Cell
-fromPosition UI{uiCellSize=cellSize} (M.Position x y) = 
+fromPosition UI{uiCellSize=cellSize} (M.Position x y) =
   Cell (newCPosition tlx $ tly + fromIntegral statusBarHeight)
        (newCPosition brx $ tly + fromIntegral statusBarHeight)
        (newCPosition tlx $ bry + fromIntegral statusBarHeight)
        (newCPosition brx $ bry + fromIntegral statusBarHeight)
   where tlx = x * cellSize
         tly = y * cellSize
-        brx = tlx + cellSize 
+        brx = tlx + cellSize
         bry = tly + cellSize
 
 cellCenter :: Cell -> CPosition
-cellCenter (Cell (CPosition tlx tly) (CPosition trx try) (CPosition blx bly) _) = 
+cellCenter (Cell (CPosition tlx tly) (CPosition trx _) (CPosition _ bly) _) =
   CPosition ((tlx + trx) `div` 2)
             ((tly + bly) `div` 2)
 
+snakePixel :: SDL.Pixel
 snakePixel = SDL.Pixel 0x00FF00FF
+
+snakeEyePixel :: SDL.Pixel
 snakeEyePixel = SDL.Pixel 0xFF0000FF
 
 drawSnake :: UI -> [M.Position] -> IO Bool
@@ -64,8 +68,8 @@ drawSnake ui@UI{uiSurface=surface, uiCellSize=cellSize} (current:next:rest) = do
   drawSnakeBody current
   drawConnection current next
   drawConnection next current
-  if not $ null rest 
-    then drawSnake ui (next:rest) 
+  if not $ null rest
+    then drawSnake ui (next:rest)
     else drawSnakeBody next
   where drawSnakeBody :: M.Position -> IO Bool
         drawSnakeBody p = SDLp.filledEllipse surface (cx center) (cy center) r r snakePixel
@@ -99,15 +103,15 @@ drawSnakeFace ui@UI{uiSurface=surface} p = do
         r = 2
 
 fromCell :: Cell -> SDL.Rect
-fromCell cell = 
+fromCell cell =
   SDL.Rect (fromIntegral$cx$tl$cell)
            (fromIntegral$cy$tl$cell)
            (fromIntegral$cx$br$cell)
            (fromIntegral$cy$br$cell)
 
 drawStars :: UI -> IO ()
-drawStars ui@UI{uiSurface=surface, uiFont=font, uiGame=M.Game{M.gameStars=stars}} = mapM_ drawStar stars
-  where 
+drawStars ui@UI{uiSurface=surface, uiFont=font, uiGame=game} = mapM_ drawStar $ game^.M.stars
+  where
     drawStar (M.SimpleStar pos) = primitiveDraw pos 0xFFFF00FF
     drawStar (M.TimedStar pos _) = primitiveDraw pos 0xFF8800FF
     primitiveDraw position color = do
@@ -116,22 +120,22 @@ drawStars ui@UI{uiSurface=surface, uiFont=font, uiGame=M.Game{M.gameStars=stars}
 
 writeStatus :: UI -> IO Bool
 writeStatus ui = do
-  text <- TTF.renderTextSolid (uiFont ui) 
-    ("Score: " ++ (show $ M.gameScore $ uiGame ui) ++ "  " ++
+  text <- TTF.renderTextSolid (uiFont ui)
+    ("Score: " ++ (show $ (uiGame ui)^.M.score) ++ "  " ++
      "Speed: " ++ (show $ uiSpeed ui) ++ " (j/k)")
     (SDL.Color 255 255 255)
   SDL.blitSurface text Nothing (uiSurface ui) Nothing
 
 draw :: UI -> IO ()
-draw ui@UI{uiGame=game@M.Game{M.gameSnake=snake}, uiSurface=surface} = do
+draw ui@UI{uiGame=game, uiSurface=surface} = do
   -- Clear the screen. Ugly hack, want to refactor to update instead of redraw everything
   SDLp.box surface (SDL.Rect 0 0 (fromIntegral $ windowWidth ui) (fromIntegral statusBarHeight)) $ SDL.Pixel 0x000000FF
   SDLp.box surface (SDL.Rect 0 (fromIntegral statusBarHeight) (fromIntegral $ windowWidth ui) (statusBarHeight + (fromIntegral $ windowWidth ui))) $ SDL.Pixel 0x000077FF
   -- Write status
   writeStatus ui
   -- Draw snake
-  drawSnake ui snake
-  drawSnakeFace ui $ head snake
+  drawSnake ui $ game^.M.snake
+  drawSnakeFace ui $ head $ game^.M.snake
   -- Draw star
   drawStars ui
   SDL.flip surface
@@ -150,22 +154,22 @@ handleInput uiRef = do
   event <- SDL.waitEvent
   ui <- DIORef.readIORef uiRef
   case event of
-    SDL.KeyDown k -> if SDL.symKey k `elem` [SDL.SDLK_UP, SDL.SDLK_RIGHT, SDL.SDLK_DOWN, SDL.SDLK_LEFT] 
+    SDL.KeyDown k -> if SDL.symKey k `elem` [SDL.SDLK_UP, SDL.SDLK_RIGHT, SDL.SDLK_DOWN, SDL.SDLK_LEFT]
       then do
         let ui' = ui{uiGame = transform (uiGame ui) (SDL.symKey k)}
         DIORef.writeIORef uiRef ui'
         handleInput uiRef
       else case SDL.symKey k of
-        SDL.SDLK_q -> DIORef.writeIORef uiRef ui{uiGame = (uiGame ui){M.gameStatus=M.Quit}}
+        SDL.SDLK_q -> DIORef.writeIORef uiRef ui{uiGame = (uiGame ui)&M.status.~M.Quit}
         SDL.SDLK_k -> modifySpeed ui 1
         SDL.SDLK_j -> modifySpeed ui (-1)
         _ -> handleInput uiRef
-    _ -> handleInput uiRef  
+    _ -> handleInput uiRef
   where toHeading SDL.SDLK_UP = M.North
         toHeading SDL.SDLK_RIGHT = M.East
         toHeading SDL.SDLK_DOWN = M.South
         toHeading SDL.SDLK_LEFT = M.West
-        transform game@M.Game{M.gameInputQueue=q} key = game{M.gameInputQueue=q ++ [toHeading key]}
+        transform g key = g&M.inputQueue %~ (++[toHeading key])
         modifySpeed ui delta = do
           let ui' = ui{uiSpeed = max 1 (min 10 $ uiSpeed ui + delta)}
           DIORef.writeIORef uiRef ui'
@@ -178,6 +182,7 @@ tick uiRef = do
   game' <- M.stretchIfStarHit 1 $ M.wrapAround $ M.detectCrash $ M.moveSnake $ M.turnSnake $ uiGame ui
   let ui' = ui{uiGame = game'}
   draw ui'
+  print game'
   DIORef.writeIORef uiRef ui'
   return True
 
@@ -193,7 +198,7 @@ timedStarTick uiRef = do
 gameLoop :: DIORef.IORef UI -> CC.ThreadId -> IO ()
 gameLoop uiRef handlerThread = do
   ui <- DIORef.readIORef uiRef
-  if (M.gameStatus $ uiGame ui) == M.Playing 
+  if (uiGame ui)^.M.status == M.Playing
     then do
       CC.threadDelay $ 1200000 `div` uiSpeed ui
       tick uiRef
@@ -207,9 +212,9 @@ waitForQ = do
     SDL.KeyDown k -> if SDL.symKey k == SDL.SDLK_q
                        then return ()
                        else waitForQ
-    _ -> waitForQ  
+    _ -> waitForQ
 
--- I want to play a game.    
+-- I want to play a game.
 init game surface font cellSize = do
   uiRef <- DIORef.newIORef UI {
     uiGame = game
@@ -226,4 +231,3 @@ init game surface font cellSize = do
   gameOver ui
   waitForQ
   SDLp.box surface (SDL.Rect 0 0 (fromIntegral $ windowWidth ui) (fromIntegral $ windowHeight ui)) $ SDL.Pixel 0x000000FF
-
