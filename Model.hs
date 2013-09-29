@@ -4,6 +4,8 @@ module Model where
 
 import qualified Data.List as DL
 import qualified System.Random as R
+
+import Data.Function
 import Control.Lens
 
 data Position = Position { _x :: Int, _y :: Int } deriving (Show, Eq, Ord)
@@ -48,6 +50,7 @@ instance HasPosition Position where
 makeLenses ''Position
 makeLenses ''Game
 
+
 offset :: Heading -> Position -> Position
 offset North = y `over` pred
 offset South = y `over` succ
@@ -78,7 +81,7 @@ moveSnake :: Game -> Game
 moveSnake = updateHead . addNeck . decStretching . updateTail . updateLastTickHeading where
       updateHead g = g&snake._head %~ (offset $ g^.heading)
       addNeck g = g&snake._tail %~ (g^.snake.to head :)
-      updateTail g = g&snake._tail %~ if g^.stretching > 0 then id else init
+      updateTail g = if g^.stretching > 0 then g else g&snake._tail %~ init
       decStretching = stretching %~ (\n -> max 0 (n - 1))
       updateLastTickHeading g = g&lastTickHeading .~ g^.heading
 
@@ -94,10 +97,15 @@ turnSnake g
         where old = g^.heading
               new = g^.inputQueue.to head
 
+thenTransform :: (t -> Bool) -> (t -> t) -> t -> t
+thenTransform p t a = if p a then t a else a
+
+thenTransformM :: Monad m => (t -> Bool) -> (t -> m t) -> t -> m t
+thenTransformM p t a = if p a then t a else return a
+
 detectCrash :: Game -> Game
-detectCrash game =
-  if crashed then game&status.~Lost else game
-  where crashed = any ((>1) . length) $ DL.group $ DL.sort $ game^.snake
+detectCrash = crashed `thenTransform` (status .~ Lost)
+  where crashed g = any ((>1) . length) $ DL.group $ DL.sort $ g^.snake
 
 generateStarPosition :: Game -> IO Position
 generateStarPosition g = do
@@ -107,16 +115,26 @@ generateStarPosition g = do
   let p = Position x y
   if p `elem` (g^.snake) || any (inSamePosition p) (g^.stars) then generateStarPosition g else return p
 
+(.&&) f g x = (f x) && (g x)
+
 placeStars :: Game -> IO Game
-placeStars game = do
-  game' <- if not haveSimpleStar then placeSimpleStar game else return game
-  wantTimedStar <- generateWantTimedStar
-  if wantTimedStar && not haveSimpleStar && not haveTimedStar then placeTimedStar game' else return game'
-  where generateWantTimedStar = do
+placeStars g = placeSimpleStarIfNeeded =<< placeTimedStarIfNeeded g
+  where
+    placeTimedStarIfNeeded :: Game -> IO Game
+    placeTimedStarIfNeeded g = do
+      lucky <- timedStarLucky
+      (noSimpleStar .&& noTimedStar .&& (\g -> lucky)) `thenTransformM` placeTimedStar $ g
+
+    placeSimpleStarIfNeeded :: Game -> IO Game
+    placeSimpleStarIfNeeded = noSimpleStar `thenTransformM` placeSimpleStar
+
+    timedStarLucky :: IO Bool
+    timedStarLucky = do
           rand <- R.getStdRandom $ R.randomR (0, 10)
           return $ (rand::Int) == 0
-        haveTimedStar = any isTimedStar (_stars game)
-        haveSimpleStar = any isSimpleStar (_stars game)
+
+    noTimedStar = not . any isTimedStar . view stars
+    noSimpleStar = not . any isSimpleStar . view stars
 
 placeSimpleStar :: Game -> IO Game
 placeSimpleStar g = do
