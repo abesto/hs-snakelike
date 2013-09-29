@@ -8,6 +8,7 @@ import qualified System.Random as R
 import Data.Function
 import Control.Lens
 
+-- Data types
 data Position = Position { _x :: Int, _y :: Int } deriving (Show, Eq, Ord)
 data Heading = North | East | South | West deriving (Show, Eq, Enum)
 succHeading West = North
@@ -30,6 +31,7 @@ data Game = Game { _heading :: Heading
                  , _score :: Int
                  } deriving Show
 
+-- Some polymorphism to compare the position of thingies
 class HasPosition a where
   getPosition :: a -> Position
 
@@ -46,9 +48,22 @@ instance HasPosition Star where
 instance HasPosition Position where
   getPosition = id
 
+-- Type wrangling
+
+thenTransform :: (t -> Bool) -> (t -> t) -> t -> t
+thenTransform p t a = if p a then t a else a
+
+thenTransformM :: Monad m => (t -> Bool) -> (t -> m t) -> t -> m t
+thenTransformM p t a = if p a then t a else return a
+
+(.&&) f g x = (f x) && (g x)
+
+-- Lenses FTW
 
 makeLenses ''Position
 makeLenses ''Game
+
+--- End of helpers, here comes actual logic
 
 
 offset :: Heading -> Position -> Position
@@ -81,7 +96,7 @@ moveSnake :: Game -> Game
 moveSnake = updateHead . addNeck . decStretching . updateTail . updateLastTickHeading where
       updateHead g = g&snake._head %~ (offset $ g^.heading)
       addNeck g = g&snake._tail %~ (g^.snake.to head :)
-      updateTail g = if g^.stretching > 0 then g else g&snake._tail %~ init
+      updateTail = ((==0) . view stretching) `thenTransform` (snake._tail %~ init)
       decStretching = stretching %~ (\n -> max 0 (n - 1))
       updateLastTickHeading g = g&lastTickHeading .~ g^.heading
 
@@ -90,18 +105,9 @@ turnSnake g
   | null $ g^.inputQueue = g
   | otherwise = g & shiftInputQueue . turnUnlessReverse where
       shiftInputQueue = inputQueue %~ tail
-      turnUnlessReverse =
-        if new `elem` [succHeading old, predHeading old]
-          then heading.~new
-          else id
+      turnUnlessReverse = (\_ -> new `elem` [succHeading old, predHeading old]) `thenTransform` (heading .~ new)
         where old = g^.heading
               new = g^.inputQueue.to head
-
-thenTransform :: (t -> Bool) -> (t -> t) -> t -> t
-thenTransform p t a = if p a then t a else a
-
-thenTransformM :: Monad m => (t -> Bool) -> (t -> m t) -> t -> m t
-thenTransformM p t a = if p a then t a else return a
 
 detectCrash :: Game -> Game
 detectCrash = crashed `thenTransform` (status .~ Lost)
@@ -114,8 +120,6 @@ generateStarPosition g = do
   y <- R.getStdRandom $ R.randomR (0, g^.rows-1)
   let p = Position x y
   if p `elem` (g^.snake) || any (inSamePosition p) (g^.stars) then generateStarPosition g else return p
-
-(.&&) f g x = (f x) && (g x)
 
 placeStars :: Game -> IO Game
 placeStars g = placeSimpleStarIfNeeded =<< placeTimedStarIfNeeded g
