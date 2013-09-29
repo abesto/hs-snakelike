@@ -182,7 +182,6 @@ tick uiRef = do
   game' <- M.stretchIfStarHit 1 $ M.wrapAround $ M.detectCrash $ M.moveSnake $ M.turnSnake $ uiGame ui
   let ui' = ui{uiGame = game'}
   draw ui'
-  print game'
   DIORef.writeIORef uiRef ui'
   return True
 
