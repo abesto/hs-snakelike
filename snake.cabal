@@ -28,7 +28,7 @@ Cabal-version:       >=1.2
 
 Executable main
     Main-is: Main.hs
-    Build-depends: base, timers, suspend, random, SDL, SDL-gfx, SDL-ttf, lens
+    Build-depends: base, timers, suspend, random, SDL, SDL-gfx, SDL-ttf, cpphs, lens
     Hs-Source-Dirs: UI, .
 
 --Executable server
