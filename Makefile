@@ -2,7 +2,7 @@ HC = ghc
 SDL_OPTIONS = `sdl-config --cflags --libs | sed -e 's/-Wl,\(\w*\)/-optl\1/' | tr ',' '-'`
 
 EXECUTABLE = snake
-SRCS = Model.hs GenerateRead.hs UI/Keys.hs UI/Menu.hs UI/Game.hs SdlMain.hs
+SRCS = Model.hs GenerateRead.hs UI/Keys.hs UI/Game.hs UI/Menu.hs SdlMain.hs
 OBJS = $(SRCS:.hs=.o)
 
 all: ${EXECUTABLE}
